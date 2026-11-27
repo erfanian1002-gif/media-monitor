@@ -24,6 +24,15 @@ def clean_text(value):
     return " ".join(value.split())
 
 
+def normalize_text(value):
+    value = (value or "").lower()
+    value = value.replace("ي", "ی").replace("ك", "ک")
+    value = value.replace("ۀ", "ه").replace("ة", "ه")
+    value = re.sub(r"[‌ـ]", " ", value)
+    value = re.sub(r"[^\w\s]", " ", value)
+    return " ".join(value.split())
+
+
 def fetch_feed():
     request = urllib.request.Request(
         FEED_URL,
@@ -62,6 +71,43 @@ def fetch_feed():
     return items
 
 
+def get_search_phrases(topic):
+    normalized_topic = normalize_text(topic)
+
+    # عبارت‌های جایگزین برای جست‌وجوی مهاجرین افغانستانی
+    if (
+        "افغانستان" in normalized_topic
+        and any(word in normalized_topic for word in ["مهاجر", "مهاجرین", "مهاجران"])
+    ):
+        return [
+            "مهاجر افغانستان",
+            "مهاجران افغانستان",
+            "مهاجرین افغانستان",
+            "مهاجر افغانستانی",
+            "مهاجران افغانستانی",
+            "مهاجرین افغانستانی",
+            "اتباع افغانستان",
+            "اتباع افغانستانی",
+            "پناهجویان افغانستان",
+            "پناهندگان افغانستان",
+            "افغانستانی های مقیم ایران",
+            "افغان های مقیم ایران",
+        ]
+
+    return [normalized_topic]
+
+
+def is_relevant(item, search_phrases):
+    searchable = normalize_text(
+        item["title"] + " " + item["description"]
+    )
+
+    return any(
+        phrase and phrase in searchable
+        for phrase in search_phrases
+    )
+
+
 topic = st.text_input(
     "موضوع جست‌وجو",
     placeholder="مثلاً: مهاجرین افغانستانی"
@@ -75,47 +121,54 @@ if st.button("جست‌وجوی خبرها", type="primary"):
             with st.spinner("در حال دریافت خوراک خبری..."):
                 items = fetch_feed()
 
-            st.success(f"اتصال برقرار شد؛ {len(items)} خبر از خوراک دریافت شد.")
+            st.success(
+                f"اتصال برقرار شد؛ {len(items)} خبر از خوراک دریافت شد."
+            )
 
             cutoff = datetime.now(timezone.utc) - timedelta(days=30)
-            topic_words = topic.strip().lower().split()
+            search_phrases = get_search_phrases(topic)
 
             matches = []
-            for item in items:
-                searchable = (
-                    item["title"] + " " + item["description"]
-                ).lower()
 
+            for item in items:
                 is_recent = (
                     item["date"] is None
                     or item["date"].astimezone(timezone.utc) >= cutoff
                 )
 
-                if is_recent and all(word in searchable for word in topic_words):
+                if is_recent and is_relevant(item, search_phrases):
                     matches.append(item)
 
             if matches:
                 st.subheader(f"{len(matches)} خبر مرتبط")
+
                 for item in matches:
                     with st.container(border=True):
                         st.caption(f"BBC فارسی · {item['date_text']}")
                         st.markdown(f"**{item['title']}**")
+
                         if item["description"]:
                             st.write(item["description"])
+
                         if item["link"]:
-                            st.markdown(f"[مشاهده خبر اصلی]({item['link']})")
+                            st.markdown(
+                                f"[مشاهده خبر اصلی]({item['link']})"
+                            )
             else:
                 st.info(
-                    "اتصال برقرار شد، اما در خبرهای موجود در این خوراک "
-                    "مطابق با عبارت واردشده نتیجه‌ای پیدا نشد."
+                    "اتصال برقرار شد، اما در خبرهای موجود در خوراک "
+                    "مطابق با عبارت‌های جست‌وجو نتیجه‌ای پیدا نشد."
                 )
 
                 with st.expander("نمایش چند خبر دریافت‌شده برای بررسی اتصال"):
                     for item in items[:5]:
                         st.markdown(f"**{item['title']}**")
                         st.caption(item["date_text"])
+
                         if item["link"]:
-                            st.markdown(f"[مشاهده خبر]({item['link']})")
+                            st.markdown(
+                                f"[مشاهده خبر]({item['link']})"
+                            )
 
         except Exception as error:
             st.error(
