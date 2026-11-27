@@ -1,9 +1,11 @@
 import streamlit as st
+import urllib.parse
 import urllib.request
 import xml.etree.ElementTree as ET
 from email.utils import parsedate_to_datetime
 from datetime import datetime, timedelta, timezone
 from html import unescape
+from concurrent.futures import ThreadPoolExecutor, as_completed
 import re
 
 st.set_page_config(
@@ -13,37 +15,72 @@ st.set_page_config(
 )
 
 st.title("سامانه پایش و جست‌وجوی رسانه")
-st.caption("آزمایشی ــ دریافت خبر از خوراک RSS مستقیم BBC فارسی")
+st.caption("نسخه آزمایشی ــ جست‌وجوی خبرهای عمومی از طریق RSS جست‌وجوی Google News")
 
-FEED_URL = "https://feeds.bbci.co.uk/persian/rss.xml"
-
+# ۳۰ رسانه فارسی‌زبان یا مرتبط با ایران و افغانستان
+# جست‌وجو به دامنه هر رسانه محدود می‌شود.
+SOURCES = [
+    ("BBC فارسی", "bbc.com/persian"),
+    ("رادیو فردا", "radiofarda.com"),
+    ("ایران اینترنشنال", "iranintl.com"),
+    ("صدای آمریکا فارسی", "ir.voanews.com"),
+    ("دویچه‌وله فارسی", "dw.com/fa-ir"),
+    ("یورونیوز فارسی", "parsi.euronews.com"),
+    ("بی‌بی‌سی دری", "bbc.com/dari"),
+    ("آریانانیوز", "ariananews.af"),
+    ("طلوع‌نیوز", "tolonews.com"),
+    ("پژواک", "pajhwok.com"),
+    ("خامه پرس", "khaama.com"),
+    ("افغانستان اینترنشنال", "afintl.com"),
+    ("خبرگزاری جمهوری اسلامی", "irna.ir"),
+    ("ایسنا", "isna.ir"),
+    ("ایرنا", "irna.ir"),
+    ("مهر", "mehrnews.com"),
+    ("تسنیم", "tasnimnews.ir"),
+    ("فارس", "farsnews.ir"),
+    ("ایسنا", "isna.ir"),
+    ("خبرآنلاین", "khabaronline.ir"),
+    ("تابناک", "tabnak.ir"),
+    ("انتخاب", "entekhab.ir"),
+    ("ایسکانیوز", "iscanews.ir"),
+    ("ایلنا", "ilna.ir"),
+    ("خبرگزاری دانشجو", "snn.ir"),
+    ("جماران", "jamaran.news"),
+    ("شرق", "sharghdaily.com"),
+    ("اعتماد", "etemadonline.com"),
+    ("رادیو زمانه", "radiozamaneh.com"),
+    ("العربیه فارسی", "persian.alarabiya.net"),
+]
 
 def clean_text(value):
     value = unescape(value or "")
     value = re.sub(r"<[^>]+>", " ", value)
     return " ".join(value.split())
 
+def make_feed_url(topic, domain):
+    query = f'{topic} site:{domain} when:30d'
+    params = {
+        "q": query,
+        "hl": "fa",
+        "gl": "IR",
+        "ceid": "IR:fa",
+    }
+    return "https://news.google.com/rss/search?" + urllib.parse.urlencode(params)
 
-def normalize_text(value):
-    value = (value or "").lower()
-    value = value.replace("ي", "ی").replace("ك", "ک")
-    value = value.replace("ۀ", "ه").replace("ة", "ه")
-    value = re.sub(r"[‌ـ]", " ", value)
-    value = re.sub(r"[^\w\s]", " ", value)
-    return " ".join(value.split())
+def fetch_source(source, topic):
+    name, domain = source
+    url = make_feed_url(topic, domain)
 
-
-def fetch_feed():
     request = urllib.request.Request(
-        FEED_URL,
+        url,
         headers={"User-Agent": "Mozilla/5.0"}
     )
 
-    with urllib.request.urlopen(request, timeout=25) as response:
+    with urllib.request.urlopen(request, timeout=15) as response:
         xml_data = response.read()
 
     root = ET.fromstring(xml_data)
-    items = []
+    results = []
 
     for item in root.findall(".//item"):
         title = clean_text(item.findtext("title", default=""))
@@ -60,7 +97,8 @@ def fetch_feed():
             date = None
             date_text = pub_date or "تاریخ نامشخص"
 
-        items.append({
+        results.append({
+            "source": name,
             "title": title,
             "description": description,
             "link": link,
@@ -68,45 +106,7 @@ def fetch_feed():
             "date_text": date_text,
         })
 
-    return items
-
-
-def get_search_phrases(topic):
-    normalized_topic = normalize_text(topic)
-
-    # عبارت‌های جایگزین برای جست‌وجوی مهاجرین افغانستانی
-    if (
-        "افغانستان" in normalized_topic
-        and any(word in normalized_topic for word in ["مهاجر", "مهاجرین", "مهاجران"])
-    ):
-        return [
-            "مهاجر افغانستان",
-            "مهاجران افغانستان",
-            "مهاجرین افغانستان",
-            "مهاجر افغانستانی",
-            "مهاجران افغانستانی",
-            "مهاجرین افغانستانی",
-            "اتباع افغانستان",
-            "اتباع افغانستانی",
-            "پناهجویان افغانستان",
-            "پناهندگان افغانستان",
-            "افغانستانی های مقیم ایران",
-            "افغان های مقیم ایران",
-        ]
-
-    return [normalized_topic]
-
-
-def is_relevant(item, search_phrases):
-    searchable = normalize_text(
-        item["title"] + " " + item["description"]
-    )
-
-    return any(
-        phrase and phrase in searchable
-        for phrase in search_phrases
-    )
-
+    return results
 
 topic = st.text_input(
     "موضوع جست‌وجو",
@@ -117,61 +117,60 @@ if st.button("جست‌وجوی خبرها", type="primary"):
     if not topic.strip():
         st.warning("موضوع جست‌وجو را وارد کن.")
     else:
-        try:
-            with st.spinner("در حال دریافت خوراک خبری..."):
-                items = fetch_feed()
+        all_results = []
+        errors = []
 
-            st.success(
-                f"اتصال برقرار شد؛ {len(items)} خبر از خوراک دریافت شد."
+        with st.spinner("در حال بررسی ۳۰ رسانه؛ ممکن است کمی زمان ببرد..."):
+            with ThreadPoolExecutor(max_workers=8) as executor:
+                futures = {
+                    executor.submit(fetch_source, source, topic.strip()): source
+                    for source in SOURCES
+                }
+
+                for future in as_completed(futures):
+                    source = futures[future]
+                    try:
+                        all_results.extend(future.result())
+                    except Exception as error:
+                        errors.append(f"{source[0]}: {type(error).__name__}")
+
+        # حذف موارد تکراری بر اساس لینک
+        unique_results = {}
+        for item in all_results:
+            key = item["link"] or item["title"]
+            unique_results[key] = item
+
+        results = list(unique_results.values())
+
+        # مرتب‌سازی بر اساس تاریخ انتشار
+        results.sort(
+            key=lambda item: item["date"] or datetime.min.replace(tzinfo=timezone.utc),
+            reverse=True
+        )
+
+        st.success(
+            f"بررسی {len(SOURCES)} رسانه تمام شد؛ "
+            f"{len(results)} خبر دریافت شد."
+        )
+
+        if results:
+            for item in results:
+                with st.container(border=True):
+                    st.caption(f"{item['source']} · {item['date_text']}")
+                    st.markdown(f"**{item['title']}**")
+
+                    if item["description"]:
+                        st.write(item["description"])
+
+                    if item["link"]:
+                        st.markdown(f"[مشاهده خبر اصلی]({item['link']})")
+        else:
+            st.info(
+                "خبری دریافت نشد. ممکن است موضوع نتیجه‌ای نداشته باشد "
+                "یا دسترسی به Google News برقرار نشده باشد."
             )
 
-            cutoff = datetime.now(timezone.utc) - timedelta(days=30)
-            search_phrases = get_search_phrases(topic)
-
-            matches = []
-
-            for item in items:
-                is_recent = (
-                    item["date"] is None
-                    or item["date"].astimezone(timezone.utc) >= cutoff
-                )
-
-                if is_recent and is_relevant(item, search_phrases):
-                    matches.append(item)
-
-            if matches:
-                st.subheader(f"{len(matches)} خبر مرتبط")
-
-                for item in matches:
-                    with st.container(border=True):
-                        st.caption(f"BBC فارسی · {item['date_text']}")
-                        st.markdown(f"**{item['title']}**")
-
-                        if item["description"]:
-                            st.write(item["description"])
-
-                        if item["link"]:
-                            st.markdown(
-                                f"[مشاهده خبر اصلی]({item['link']})"
-                            )
-            else:
-                st.info(
-                    "اتصال برقرار شد، اما در خبرهای موجود در خوراک "
-                    "مطابق با عبارت‌های جست‌وجو نتیجه‌ای پیدا نشد."
-                )
-
-                with st.expander("نمایش چند خبر دریافت‌شده برای بررسی اتصال"):
-                    for item in items[:5]:
-                        st.markdown(f"**{item['title']}**")
-                        st.caption(item["date_text"])
-
-                        if item["link"]:
-                            st.markdown(
-                                f"[مشاهده خبر]({item['link']})"
-                            )
-
-        except Exception as error:
-            st.error(
-                f"دریافت خوراک خبری ناموفق بود: "
-                f"{type(error).__name__}: {error}"
-            )
+        if errors:
+            with st.expander(f"نمایش خطاهای {len(errors)} رسانه"):
+                for error in errors:
+                    st.write(error)
